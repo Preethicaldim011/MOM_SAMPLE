@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { api } from '../services/api';
 import { 
   Mic, MicOff, Home, ArrowLeft, Save, Trash2, LayoutDashboard, 
   FolderOpen, ChevronDown, PlusCircle, Settings, RefreshCw, 
@@ -39,8 +40,12 @@ function MeetingPage() {
     delete: true
   });
   
+  // Loading states for API
+  const [isLoading, setIsLoading] = useState(false);
+  const [apiError, setApiError] = useState('');
+  
   // Simple device state
-  const [micPermission, setMicPermission] = useState('prompt'); // 'prompt', 'granted', 'denied'
+  const [micPermission, setMicPermission] = useState('prompt');
   const [micError, setMicError] = useState('');
   const [showSettings, setShowSettings] = useState(false);
 
@@ -48,7 +53,6 @@ function MeetingPage() {
   const pendingPointsRef = useRef(null);
 
   // ===== ALL FUNCTION DEFINITIONS FIRST =====
-  // (These need to be defined before they're used in useEffect hooks)
 
   const getUniqueProjects = () => {
     const projects = new Set();
@@ -107,11 +111,9 @@ function MeetingPage() {
 
   const toggleListening = async () => {
     if (isListening) {
-      // Stop listening
       recognitionRef.current?.stop();
       setIsListening(false);
     } else {
-      // Check permission and start
       if (micPermission !== 'granted') {
         const success = await requestMicrophonePermission();
         if (!success) return;
@@ -185,13 +187,98 @@ function MeetingPage() {
     });
   };
 
-  const saveAndExit = () => {
-    if (pendingPoints.length > 0) {
-      if (window.confirm('You have unsaved points. Do you want to save them to the table before exiting?')) {
-        saveToTable();
+  // Updated saveAndExit with API
+  const saveAndExit = async () => {
+    setIsLoading(true);
+    try {
+      if (pendingPoints.length > 0) {
+        if (window.confirm('You have unsaved points. Do you want to save them to the table before exiting?')) {
+          saveToTable();
+        }
       }
+      
+      // Save to database if we have points
+      if (meetingPoints.length > 0) {
+        await saveMeetingToDB();
+      }
+      
+      navigate('/');
+    } catch (error) {
+      console.error('Error saving:', error);
+      alert('Failed to save meeting: ' + error.message);
+    } finally {
+      setIsLoading(false);
     }
-    navigate('/');
+  };
+
+  // SIMPLIFIED function to save meeting to database - ALWAYS CREATES NEW MEETING
+  const saveMeetingToDB = async () => {
+    if (!project || !phase) return;
+    
+    try {
+      console.log('Saving meeting for project:', project);
+      console.log('Project type:', typeof project);
+      
+      // ALWAYS create a new meeting (ignore meetingId for now)
+      const meetingData = {
+        project_id: project,  // This should be the UUID
+        phase: phase,
+        title: `${project} - ${phase} Meeting`,
+        points: meetingPoints.map(point => ({
+          sno: point.sno,
+          function: point.function,
+          project_name: point.projectName,
+          criticality: point.criticality,
+          discussion_point: point.discussionPoint,
+          responsibility: point.responsibility,
+          target: point.target,
+          remainder: point.remainder,
+          status: point.status,
+          action_taken: point.actionTaken,
+          speaker: point.speaker,
+          timestamp: point.timestamp
+        }))
+      };
+      
+      console.log('Sending to API:', meetingData);
+      
+      // Create new meeting
+      const newMeeting = await api.createMeeting(meetingData);
+      console.log('✅ Meeting saved successfully!', newMeeting);
+      
+      // Show success message
+      alert('Meeting saved to database!');
+      
+    } catch (error) {
+      console.error('Failed to save meeting:', error);
+      setApiError('Failed to save to database: ' + error.message);
+      throw error;
+    }
+  };
+
+  // Load meetings from database
+  const loadMeetingsFromDB = async () => {
+    setIsLoading(true);
+    setApiError('');
+    try {
+      const meetings = await api.getMeetings();
+      console.log('Loaded meetings:', meetings);
+      
+      // Format meetings for the sidebar
+      const formattedMeetings = meetings.map(meeting => ({
+        id: meeting.id,
+        project: meeting.project_id, // Use the UUID
+        phase: meeting.phase,
+        points: meeting.points || []
+      }));
+      
+      setCompletedMeetings(formattedMeetings);
+    } catch (error) {
+      console.error('Failed to load meetings:', error);
+      setApiError('Failed to load meetings from database');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleBackToTVS = () => {
@@ -204,16 +291,25 @@ function MeetingPage() {
     }
   };
 
-  const handleMeetingClick = (meeting) => {
-    navigate('/meeting', { 
-      state: { 
-        meetingId: meeting.id,
-        project: meeting.project,
-        phase: meeting.phase,
-        meetingData: meeting,
-        existingPoints: meeting.points || []
-      }
-    });
+  const handleMeetingClick = async (meeting) => {
+    setIsLoading(true);
+    try {
+      const meetingData = await api.getMeeting(meeting.id);
+      navigate('/meeting', { 
+        state: { 
+          meetingId: meetingData.id,
+          project: meetingData.project_id, // Use the UUID
+          phase: meetingData.phase,
+          meetingData: meetingData,
+          existingPoints: meetingData.points || []
+        }
+      });
+    } catch (error) {
+      console.error('Failed to load meeting:', error);
+      alert('Failed to load meeting details');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const toggleProjectExpand = (project) => {
@@ -260,7 +356,6 @@ function MeetingPage() {
 
   const exportData = (format) => {
     console.log(`Exporting as ${format}`, meetingPoints);
-    // Implement export functionality
   };
 
   const getHeaderTitle = () => {
@@ -270,7 +365,6 @@ function MeetingPage() {
     return 'Meeting Minutes';
   };
 
-  // Filtered meeting points based on search
   const filteredMeetingPoints = meetingPoints.filter(point => 
     point.discussionPoint.toLowerCase().includes(searchTerm.toLowerCase()) ||
     point.function.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -279,7 +373,6 @@ function MeetingPage() {
 
   // ===== USEEFFECT HOOKS =====
 
-  // Transform existing points to new format
   useEffect(() => {
     if (existingPoints.length > 0) {
       const transformedPoints = existingPoints.map((point, index) => ({
@@ -301,15 +394,11 @@ function MeetingPage() {
     }
   }, [existingPoints, project]);
 
-  // Load completed meetings from localStorage
+  // Load meetings from database instead of localStorage
   useEffect(() => {
-    const savedMeetings = localStorage.getItem('completedMeetings');
-    if (savedMeetings) {
-      setCompletedMeetings(JSON.parse(savedMeetings));
-    }
+    loadMeetingsFromDB();
   }, []);
 
-  // Set initial expanded state for the current project
   useEffect(() => {
     if (project) {
       setActiveSidebarItem(project);
@@ -320,7 +409,6 @@ function MeetingPage() {
     }
   }, [project]);
 
-  // Initialize speech recognition
   useEffect(() => {
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -373,26 +461,11 @@ function MeetingPage() {
     };
   }, []);
 
-  // Save points to localStorage
-  useEffect(() => {
-    if (meetingId && meetingPoints.length > 0) {
-      const savedMeetings = JSON.parse(localStorage.getItem('completedMeetings') || '[]');
-      const updatedMeetings = savedMeetings.map(meeting => 
-        meeting.id === meetingId 
-          ? { ...meeting, points: meetingPoints }
-          : meeting
-      );
-      localStorage.setItem('completedMeetings', JSON.stringify(updatedMeetings));
-    }
-  }, [meetingPoints, meetingId]);
-
   // ===== RENDER FUNCTIONS =====
 
-  // Render device setup flow based on state
   const renderDeviceSetup = () => {
     return (
       <div className="bg-white rounded-xl shadow-md p-8 mb-6">
-        {/* Simple Mic Interface */}
         <div className="flex flex-col items-center justify-center">
           <button
             onClick={toggleListening}
@@ -426,7 +499,6 @@ function MeetingPage() {
           )}
         </div>
 
-        {/* Current Speech Indicator */}
         {currentSpeechPoint && (
           <div className="mt-6 bg-blue-50 border-l-4 border-blue-500 rounded-lg p-4">
             <p className="text-sm text-gray-500 mb-1">Currently speaking:</p>
@@ -439,6 +511,18 @@ function MeetingPage() {
 
   return (
     <div className="flex h-screen bg-gray-50">
+      {/* Loading Bar */}
+      {isLoading && (
+        <div className="fixed top-0 left-0 w-full h-1 bg-blue-500 animate-pulse z-50"></div>
+      )}
+      
+      {/* Error Message */}
+      {apiError && (
+        <div className="fixed top-2 right-2 z-50 p-3 bg-red-100 text-red-700 rounded-lg shadow-lg">
+          {apiError}
+        </div>
+      )}
+
       {/* Sidebar */}
       <div className="w-72 bg-white shadow-lg flex flex-col h-screen overflow-hidden">
         <div className="p-6">
@@ -447,14 +531,14 @@ function MeetingPage() {
         <nav className="flex-1 overflow-y-auto px-4 pb-6">
           <div className="mb-2">
             <div 
-  onClick={handleDashboardClick}
-  className={`flex items-center px-4 py-3 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer ${
-    activeSidebarItem === 'dashboard' ? 'bg-blue-50 text-blue-600 font-medium border-l-4 border-blue-600' : ''
-  }`}
->
-  <LayoutDashboard size={20} className="mr-3" />  {/* Changed from Tv to LayoutDashboard */}
-  <span>MinutesOfMeeting</span>  {/* Changed from TVS to MinutesOfMeeting */}
-</div>
+              onClick={handleDashboardClick}
+              className={`flex items-center px-4 py-3 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer ${
+                activeSidebarItem === 'dashboard' ? 'bg-blue-50 text-blue-600 font-medium border-l-4 border-blue-600' : ''
+              }`}
+            >
+              <LayoutDashboard size={20} className="mr-3" />
+              <span>MinutesOfMeeting</span>
+            </div>
             
             {completedMeetings.length > 0 && (
               <div className="ml-4 mt-1 space-y-1 border-l-2 border-gray-100 pl-2">
@@ -580,7 +664,6 @@ function MeetingPage() {
             </button>
           </div>
 
-          {/* Settings Button */}
           <div className="mb-4 flex justify-end">
             <button
               onClick={() => setShowSettings(!showSettings)}
@@ -591,7 +674,6 @@ function MeetingPage() {
             </button>
           </div>
 
-          {/* Settings Panel */}
           {showSettings && (
             <div className="mb-6 bg-white rounded-xl shadow-md p-6">
               <h3 className="text-lg font-semibold text-gray-800 mb-4">Audio Settings</h3>
@@ -637,10 +719,8 @@ function MeetingPage() {
 
           {activeTab === 'speech' && (
             <div className="bg-white rounded-xl shadow-md p-8">
-              {/* Simple Mic Interface */}
               {renderDeviceSetup()}
 
-              {/* Pending Points Section */}
               <div className="mb-6">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-lg font-semibold text-gray-700">Pending Points</h3>
@@ -702,7 +782,6 @@ function MeetingPage() {
                 </div>
               </div>
 
-              {/* Manual Input */}
               <div className="mt-8 p-6 bg-gray-50 rounded-xl">
                 <label className="block text-sm font-medium text-gray-700 mb-3">
                   Add Meeting Point Manually
@@ -730,7 +809,6 @@ function MeetingPage() {
 
           {activeTab === 'table' && (
             <div className="bg-white rounded-xl shadow-md p-8">
-              {/* Table Header with Search and Add Column */}
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-2xl font-bold text-gray-800">Meeting Points</h2>
                 <div className="flex items-center gap-3">
@@ -745,7 +823,6 @@ function MeetingPage() {
                     />
                   </div>
                   
-                  {/* Add Column Dropdown */}
                   <div className="relative">
                     <button
                       onClick={() => setShowColumnMenu(!showColumnMenu)}
@@ -777,7 +854,6 @@ function MeetingPage() {
                 </div>
               </div>
 
-              {/* Table */}
               {filteredMeetingPoints.length > 0 ? (
                 <div className="overflow-x-auto border border-gray-200 rounded-xl mb-4">
                   <table className="min-w-full divide-y divide-gray-200">
@@ -947,7 +1023,6 @@ function MeetingPage() {
                 </div>
               )}
 
-              {/* Footer with Stats and Export */}
               <div className="flex items-center justify-between text-sm text-gray-500">
                 <div>
                   Showing {filteredMeetingPoints.length} of {meetingPoints.length} meeting points • 
